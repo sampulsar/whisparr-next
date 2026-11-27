@@ -293,6 +293,37 @@ namespace NzbDrone.Core.Test.MovieTests.MovieRepositoryTests
         }
 
         [Test]
+        public void should_page_ids_then_hydrate_in_order()
+        {
+            var profile = GivenProfile();
+            var first = GivenPagedMovie(profile.Id, movieFileId: 0);
+            var second = GivenPagedMovie(profile.Id, movieFileId: 0);
+            var third = GivenPagedMovie(profile.Id, movieFileId: 0);
+
+            var page1 = Subject.GetPaged(new PagingSpec<Movie> { Page = 1, PageSize = 2 });
+            var page2 = Subject.GetPaged(new PagingSpec<Movie> { Page = 2, PageSize = 2 });
+
+            page1.TotalRecords.Should().Be(3);
+            page1.Records.Select(m => m.Id).Should().ContainInOrder(first.Id, second.Id);
+            page1.Records.Should().OnlyContain(m => m.MovieMetadata.Value != null);
+
+            page2.TotalRecords.Should().Be(3);
+            page2.Records.Select(m => m.Id).Should().ContainSingle().Which.Should().Be(third.Id);
+        }
+
+        [Test]
+        public void should_return_empty_records_with_total_when_page_out_of_range()
+        {
+            var profile = GivenProfile();
+            GivenPagedMovie(profile.Id, movieFileId: 0);
+
+            var spec = Subject.GetPaged(new PagingSpec<Movie> { Page = 5, PageSize = 10 });
+
+            spec.Records.Should().BeEmpty();
+            spec.TotalRecords.Should().Be(1);
+        }
+
+        [Test]
         public void should_get_titles_of_only_the_studios_scenes()
         {
             var profile = GivenProfile();

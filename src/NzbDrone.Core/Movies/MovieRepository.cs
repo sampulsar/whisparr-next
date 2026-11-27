@@ -93,7 +93,14 @@ namespace NzbDrone.Core.Movies
 
         public override PagingSpec<Movie> GetPaged(PagingSpec<Movie> pagingSpec)
         {
-            pagingSpec.Records = GetPagedRecords(PagedBuilder(), pagingSpec, PagedQueryWithFile);
+            // Phase 1 reads only Movies.Id with the same filters/sort/page. Sorting and
+            // paging over 1M+ rows must not drag the MovieMetadata TOAST columns
+            // (Images, Recommendations, Overview) through the sort.
+            var ids = GetPagedRecords(PagedBuilder(), pagingSpec, PagedIdsQuery).Select(m => m.Id).ToList();
+
+            // Phase 2 hydrates just the page by PK, preserving the page order.
+            // PagedQueryWithFile still excludes MovieFile.MediaInfo.
+            pagingSpec.Records = ids.Count == 0 ? new List<Movie>() : HydratePagedPage(ids);
             pagingSpec.TotalRecords = GetPagedRecordCount(PagedBuilder().SelectCount(), pagingSpec);
 
             return pagingSpec;
@@ -763,6 +770,31 @@ namespace NzbDrone.Core.Movies
         // GROUP BY Movies.Id, and selecting a non-aggregated file column under that errors on
         // Postgres. QualityProfile comes from the repository rather than a JOIN because
         // MovieFileResource.ToResource dereferences it to compute QualityCutoffNotMet.
+        // Phase 1 of GetPaged: same filters/sort/page, but SELECTs only Movies.Id so the
+        // sort never touches TOAST. The template mirrors SelectTemplate plus /**orderby**/
+        // because GetPagedRecords appends the ORDER BY/LIMIT/OFFSET before calling back.
+        private IEnumerable<Movie> PagedIdsQuery(SqlBuilder builder)
+        {
+            var sql = builder
+                .Select($"\"{_table}\".\"Id\"")
+                .AddTemplate("SELECT /**select**/ FROM \"Movies\" /**join**/ /**innerjoin**/ /**leftjoin**/ /**where**/ /**groupby**/ /**having**/ /**orderby**/");
+
+            using var conn = _database.OpenConnection();
+
+            return conn.Query<int>(sql.RawSql, sql.Parameters)
+                .Select(id => new Movie { Id = id })
+                .ToList();
+        }
+
+        private List<Movie> HydratePagedPage(List<int> ids)
+        {
+            var builder = PagedBuilder().Where<Movie>(m => ids.Contains(m.Id));
+            var movies = PagedQueryWithFile(builder).ToList();
+            var byId = movies.ToDictionary(m => m.Id);
+
+            return ids.Where(byId.ContainsKey).Select(id => byId[id]).ToList();
+        }
+
         private IEnumerable<Movie> PagedQueryWithFile(SqlBuilder builder)
         {
             var profiles = _profileRepository.All().ToDictionary(x => x.Id);
